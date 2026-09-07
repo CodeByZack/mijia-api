@@ -47,8 +47,11 @@ test("utcOffsetString 与 getTimezoneOffset 自洽", () => {
   const s = utcOffsetString(d);
   const m = s.match(/^([+-])(\d\d):(\d\d)$/);
   assert.ok(m);
-  const parsed = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 3600 + Number(m[3]) * 60) * 1000
-  assert.equal(parsed, ms);
+  const parsed = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 3600 + Number(m[3]) * 60) * 1000;
+  // UTC 时区下 getTimezoneOffset() 返回 -0，而 0 与 -0 在 Object.is 语义下不相等
+  // （GitHub runner 正好是 UTC，本地时区不是，所以这个坑只在 CI 上暴露）。
+  // 断言的是数值相等，转成字符串后两者都是 "0"。
+  assert.equal(String(parsed), String(ms));
 });
 
 test("daylightInfo 与偏移量自洽", () => {
@@ -70,9 +73,12 @@ test("daylightInfo 与偏移量自洽", () => {
   }
 });
 
-test("localTimezoneName 返回非空时区名", () => {
-  assert.ok(localTimezoneName().length > 0);
-  assert.ok(localTimezoneName().includes("/"));
+test("localTimezoneName 返回合法时区名", () => {
+  const tz = localTimezoneName();
+  assert.ok(tz.length > 0);
+  // 容器/CI 环境常常不设 TZ：此时返回 "UTC"（不含 /）或 "Etc/Unknown"，
+  // 正常桌面环境才是 Asia/Shanghai 这类 IANA 名。断言形状而不是断言含 "/"。
+  assert.match(tz, /^[A-Za-z_][\w+.\-/]*$/);
 });
 
 test("randomChars 长度与字符集", () => {
