@@ -112,16 +112,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Build comes BEFORE typecheck on purpose. examples/*.ts imports this package
+      # by its own name (mijia-node), which is what a consumer writes - so those
+      # examples resolve against the published exports map, not against src/. In a
+      # clean checkout dist/ does not exist yet, and typechecking before the build
+      # fails with TS2307 Cannot find module 'mijia-node' on every Node version. It
+      # also makes typecheck verify the real contract: the declarations actually
+      # shipped in the tarball.
+      #
+      # dist/ is gitignored and not committed - it is rebuilt here so the packed
+      # tarball is produced from the exact source at this commit.
+      - name: Build
+        run: npm run build
+
       - name: Typecheck
         run: npm run typecheck
 
       - name: Test
         run: npm test
-
-      # dist/ is gitignored and not committed - it must be rebuilt here so the
-      # packed tarball is produced from the exact source at this commit.
-      - name: Build
-        run: npm run build
 
       - name: Pack the package
         shell: bash
