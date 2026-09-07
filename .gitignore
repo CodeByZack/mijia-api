@@ -3,7 +3,9 @@ dist/
 *.log
 auth.json
 .mijia-api-data/
-.mijia-api-data/
 .env
 coverage/
 *.tsbuildinfo
+# npm pack artifacts used by scripts/audit-tarball.mjs
+.audit/
+*.tgz

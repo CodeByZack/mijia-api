@@ -1,0 +1,281 @@
+# Publish mijia-node to npm and cut the GitHub Release automatically.
+#
+# Primary path - push a version tag, everything else happens by itself:
+#     npm version patch && git push origin main v0.1.1
+# The workflow then validates, publishes, and creates the release.
+#
+# Secondary paths, both still supported:
+#   - Create a GitHub Release by hand from an existing tag (if you want to write
+#     the notes in the UI first); the release step then becomes a no-op
+#   - Run this workflow manually with publish=true (recovery / forced publish)
+#
+# Pushes to main and pull requests only validate - they never publish.
+#
+# Tags must look like v<X.Y.Z> and must match package.json version;
+# scripts/check-version.mjs refuses anything else. A published npm version can
+# never be overwritten, so this gate is what keeps a bad tag from needing a
+# second release to fix.
+#
+# Idempotent: a re-run is safe. An already-published version is detected with
+# `npm view` and skipped - without this, a republish 403 would make a partially
+# failed run unrecoverable. An existing release is left exactly as it is.
+#
+# Auth + mode - DIRECT publish through npm trusted publishing (OIDC). No secret
+# exists in this repo:
+#
+#   npm publish --access public --provenance --tag <tag>
+#
+# One-time setup on npmjs.com for this package:
+#   package settings -> Trusted publishing -> add publisher
+#     provider: GitHub
+#     owner/repo: CodeByZack/mijia-api
+#     workflow filename: npm-publish.yml
+#     Allowed actions: must allow DIRECT publish. Every trusted-publisher config
+#       can stage by default while direct is opt-in, so a stage-only config
+#       REFUSES plain `npm publish`. Enabling direct is the required prerequisite
+#       for this workflow - the job fails loudly if it is not set.
+#
+# At publish time the npm CLI exchanges a GitHub OIDC token minted for this job.
+# Requires id-token: write below, and NODE_AUTH_TOKEN must be ABSENT - a present
+# but empty value is what makes people believe a token is configured. The workflow
+# FILENAME is part of the registration, so renaming this file requires
+# re-registering the publisher.
+#
+# Gotcha on the FIRST publish: npm refuses to attach a trusted publisher to a
+# package that does not exist yet. So version 0.1.0 must be published once with a
+# token (`npm publish --access public`), only then can the trusted publisher be
+# registered above. Keep that token's lifetime to minutes and delete it.
+#
+# Trade-off, chosen deliberately: direct publish means a compromised CI pipeline
+# can push a version straight to the registry with no human in the loop. npm
+# defaults trusted publishers to stage-only for exactly that reason. This repo
+# takes direct for simplicity.
+#
+# dist/ is gitignored and is NEVER committed - it is built in CI from the exact
+# source at the tagged commit, then packed. scripts/audit-tarball.mjs refuses to
+# let a build be skipped: without it `npm pack` would silently publish an empty
+# dist/ and every consumer would get a broken package.
+#
+# After publishing, consumers install with:
+#   npm install mijia-node
+
+name: npm publish
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Actually publish to npm (false = validate only)
+        type: boolean
+        default: false
+      npm_tag:
+        description: dist-tag to publish under (leave empty for latest)
+        type: string
+        default: ''
+
+# Two concurrent publishes race on the same version and the second one fails.
+# Keep both lanes serialized and never cancel a publish in flight.
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate on node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json engines says >=18.17; 20 is the nearest non-EOL floor.
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Check the lockfile is pinned to registry.npmjs.org
+        run: node scripts/check-lockfile-registry.mjs
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # dist/ is gitignored and not committed - it must be rebuilt here so the
+      # packed tarball is produced from the exact source at this commit.
+      - name: Build
+        run: npm run build
+
+      - name: Pack the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(npm pack --silent | tail -n1)"
+          mkdir -p .audit
+          tar -xzf "$TARBALL" -C .audit
+          echo "$TARBALL" > .audit/tarball.txt
+          ls -la .audit/package | head -n 20
+
+      - name: Audit the packed manifest
+        shell: bash
+        run: node scripts/audit-tarball.mjs .audit/package "$(cat .audit/tarball.txt)"
+
+  publish:
+    name: publish to npm
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    permissions:
+      contents: write  # gh release create needs write; read makes it 403
+      id-token: write  # npm trusted publishing (OIDC) and --provenance
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the release step needs the tag object and its message
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use the latest npm (trusted publishing / provenance are version-gated)
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Resolve the tag for this run
+        id: tag
+        shell: bash
+        env:
+          EVENT_RELEASE_TAG: ${{ github.event.release && github.event.release.tag_name || '' }}
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EVENT_RELEASE_TAG" ]; then
+            TAG="$EVENT_RELEASE_TAG"
+          elif case "$REF" in refs/tags/*) true ;; *) false ;; esac; then
+            TAG="$REF_NAME"
+          else
+            TAG=''
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag for this run: ${TAG:-<none, manual run>}"
+
+      - name: Check the tag matches the package version
+        if: steps.tag.outputs.tag != ''
+        shell: bash
+        run: node scripts/check-version.mjs "${{ steps.tag.outputs.tag }}"
+
+      - name: Publish
+        shell: bash
+        env:
+          NPM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_tag || 'latest' }}
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+
+          # OIDC trusted publishing requires npm to find NO token. actions/setup-node
+          # exports NODE_AUTH_TOKEN to every later step as soon as registry-url is set,
+          # and writes an _authToken line into its userconfig. Two failure modes:
+          #   - a real token present -> npm uses it and never reaches for OIDC; a
+          #     deleted token then surfaces as a cryptic 404 on the PUT
+          #   - the key deleted but the line left behind -> a present-but-empty
+          #     _authToken still reads as "auth is configured", so npm answers
+          #     ENEEDAUTH without ever trying OIDC
+          # Deleting a config key is not a reliable way out, so hand npm a config that
+          # contains nothing but the registry URL.
+          unset NODE_AUTH_TOKEN
+          CLEAN_NPMRC=$(mktemp)
+          printf 'registry=https://registry.npmjs.org/\n' > "$CLEAN_NPMRC"
+          export NPM_CONFIG_USERCONFIG="$CLEAN_NPMRC"
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::no OIDC request URL/token in the environment - this job needs 'permissions: id-token: write'"
+            exit 1
+          fi
+          echo "npm $(npm --version) on node $(node --version); clean userconfig, no token, OIDC URL + token present"
+
+          # Skip rather than fail: npm returns 403 for a republished version and
+          # would otherwise leave a half-finished run unrecoverable.
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already published - skipping so this run stays re-runnable"
+          else
+            # --loglevel verbose is not decoration here. npm fetches the GitHub ID
+            # token and exchanges it at
+            #   POST /-/npm/v1/oidc/token/exchange/package/<pkg>
+            # and EVERY way that can fail - bad permissions, workflow filename
+            # mismatch, a trusted-publisher config that is stage-only - it only
+            # records at verbose before returning undefined. npm then finds no
+            # credentials and throws
+            #   npm error need auth This command requires you to be logged in
+            # At the default loglevel nothing says why the exchange failed, so the
+            # release fails forever for an unnameable reason.
+            set +e
+            npm publish --access public --provenance --tag "$NPM_TAG" --loglevel verbose >npm-publish.out 2>&1
+            rc=$?
+            set -e
+            grep -vE '^npm (verbose|silly) (http|fetch)' npm-publish.out | tail -n 50 || true
+            if [ "$rc" -eq 0 ]; then
+              echo "published $NAME@$VERSION"
+            else
+              echo "::error::npm publish failed with exit $rc"
+              echo "--- oidc exchange result: the only place the real cause is printed ---"
+              grep -iE 'oidc|exchange|ENEEDAUTH|need auth|error code|error 4|error 3' npm-publish.out | tail -n 40 || true
+              exit "$rc"
+            fi
+          fi
+
+      - name: Create the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            echo "::notice::manual run without a tag - skipping release creation"
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG already has a release - leaving it as is"
+            exit 0
+          fi
+          # Prefer the annotated tag message as the release notes - it is the one
+          # place a curator writes them. Fetched through the API rather than from
+          # the local clone: actions/checkout rewrites a checked-out tag ref to
+          # point at its commit, so the local ref is lightweight and the message is
+          # gone.
+          REF_TYPE=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.type')
+          if [ "$REF_TYPE" = tag ]; then
+            TAG_OBJ=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/$TAG_OBJ" --jq '.message' > release-notes.md
+          else
+            : > release-notes.md
+          fi
+          if [ -s release-notes.md ]; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi
