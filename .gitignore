@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+auth.json
+.mijia-api-data/
+.mijia-api-data/
+.env
+coverage/
+*.tsbuildinfo

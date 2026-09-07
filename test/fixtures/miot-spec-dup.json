@@ -1,0 +1,35 @@
+{
+  "props": {
+    "product": {
+      "name": "X",
+      "model": "m.x"
+    },
+    "tree": {
+      "services": [
+        {
+          "iid": 2,
+          "properties": [
+            {
+              "iid": 1,
+              "type": "on",
+              "format": "bool",
+              "description": "a",
+              "access": [
+                "read"
+              ]
+            },
+            {
+              "iid": 2,
+              "type": "on",
+              "format": "bool",
+              "description": "b",
+              "access": [
+                "read"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

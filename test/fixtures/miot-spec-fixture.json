@@ -1,0 +1,122 @@
+{
+  "props": {
+    "product": {
+      "name": "米家台灯 1S",
+      "model": "yeelink.light.lamp4"
+    },
+    "i18n": {
+      "zh_cn": {
+        "service:002:property:001": "开关",
+        "service:002:property:002": "亮度",
+        "service:002:property:004": "模式",
+        "service:003:property:001": "开关",
+        "service:002:action:001": "开灯",
+        "service:002:value:001": "关",
+        "service:002:value:002": "开"
+      }
+    },
+    "tree": {
+      "services": [
+        {
+          "iid": 2,
+          "properties": [
+            {
+              "iid": 1,
+              "type": "on",
+              "format": "bool",
+              "description": "On Off",
+              "access": [
+                "read",
+                "write"
+              ]
+            },
+            {
+              "iid": 2,
+              "type": "brightness",
+              "format": "int",
+              "description": "Brightness",
+              "access": [
+                "read",
+                "write"
+              ],
+              "valueRange": [
+                1,
+                100,
+                1
+              ]
+            },
+            {
+              "iid": 3,
+              "type": "dimming-speed",
+              "format": "uint",
+              "description": "Dimming Speed",
+              "access": [
+                "write"
+              ]
+            },
+            {
+              "iid": 4,
+              "type": "mode",
+              "format": "string",
+              "description": "Mode",
+              "access": [
+                "read",
+                "write"
+              ],
+              "valueList": [
+                {
+                  "iid": 1,
+                  "value": "normal",
+                  "description": "Normal",
+                  "i18nKey": "service:002:value:001"
+                },
+                {
+                  "iid": 2,
+                  "value": "reading",
+                  "description": "Reading",
+                  "i18nKey": "service:002:value:002"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "iid": 1,
+              "type": "start",
+              "description": "Start",
+              "in": [
+                {
+                  "iid": 1,
+                  "format": "int",
+                  "type": "brightness",
+                  "description": "Brightness"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "iid": 3,
+          "properties": [
+            {
+              "iid": 1,
+              "type": "on",
+              "format": "bool",
+              "description": "On Off",
+              "access": [
+                "read"
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "iid": 1,
+              "type": "start",
+              "description": "Start"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
