@@ -42,14 +42,11 @@
 # re-registering the publisher.
 #
 # Gotcha on the FIRST publish: npm refuses to attach a trusted publisher to a
-# package that does not exist yet. So version 0.1.0 must be published once with a
-# token, only then can the trusted publisher be registered above. That token is the
-# GitHub secret NPM_TOKEN, used ONLY through the manual auth=token lane below. It must
-# be an automation token (npm settings -> Access Tokens -> automation), because a
-# token bound to a login prompt cannot be used from a non-interactive publish.
-#
-# Delete NPM_TOKEN as soon as 0.1.0 is out: while it exists, npm uses it instead of
-# OIDC, so the whole point of trusted publishing is silently switched off.
+# package that does not exist yet, so 0.1.0 had to go out with a token before the
+# publisher above could be registered. That token has since been deleted - this
+# workflow holds no secret at all, which is the whole point of trusted publishing.
+# If you need to bootstrap a different package the same way: npm settings ->
+# Access Tokens -> automation gives a token that works from a non-interactive publish.
 #
 # Trade-off, chosen deliberately: direct publish means a compromised CI pipeline
 # can push a version straight to the registry with no human in the loop. npm
@@ -83,13 +80,6 @@ on:
         description: dist-tag for this version (latest / next / beta). NOT a version number - leave empty for latest
         type: string
         default: ''
-      auth:
-        description: Auth for the publish step. token = first publish only, needs the NPM_TOKEN secret
-        type: choice
-        default: oidc
-        options:
-          - oidc
-          - token
 
 # Two concurrent publishes race on the same version and the second one fails.
 # Keep both lanes serialized and never cancel a publish in flight.
@@ -212,8 +202,6 @@ jobs:
         shell: bash
         env:
           NPM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_tag || 'latest' }}
-          AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth || 'oidc' }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
@@ -229,38 +217,25 @@ jobs:
             exit 1
           fi
 
-          # Two auth lanes, chosen once here and reused by the publish call below.
-          if [ "$AUTH_MODE" = token ]; then
-            # First publish only: npm will not attach a trusted publisher to a package
-            # that does not exist yet. Delete NPM_TOKEN immediately afterwards - while it
-            # exists npm uses it instead of OIDC, which silently switches the whole point off.
-            : "${NPM_TOKEN:?:NPM_TOKEN secret is not set}"
-            export NODE_AUTH_TOKEN="$NPM_TOKEN"
-            CLEAN_NPMRC=$(mktemp)
-            printf 'registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$CLEAN_NPMRC"
-            export NPM_CONFIG_USERCONFIG="$CLEAN_NPMRC"
-            echo "npm $(npm --version) on node $(node --version); token auth"
-          else
-            # OIDC trusted publishing requires npm to find NO token. actions/setup-node
-            # exports NODE_AUTH_TOKEN to every later step as soon as registry-url is set,
-            # and writes an _authToken line into its userconfig. Two failure modes:
-            #   - a real token present -> npm uses it and never reaches for OIDC; a
-            #     deleted token then surfaces as a cryptic 404 on the PUT
-            #   - the key deleted but the line left behind -> a present-but-empty
-            #     _authToken still reads as "auth is configured", so npm answers
-            #     ENEEDAUTH without ever trying OIDC
-            # Deleting a config key is not a reliable way out, so hand npm a config that
-            # contains nothing but the registry URL.
-            unset NODE_AUTH_TOKEN
-            CLEAN_NPMRC=$(mktemp)
-            printf 'registry=https://registry.npmjs.org/\n' > "$CLEAN_NPMRC"
-            export NPM_CONFIG_USERCONFIG="$CLEAN_NPMRC"
-            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
-              echo "::error::no OIDC request URL/token in the environment - this job needs 'permissions: id-token: write'"
-              exit 1
-            fi
-            echo "npm $(npm --version) on node $(node --version); clean userconfig, no token, OIDC URL + token present"
+          # OIDC trusted publishing requires npm to find NO token. actions/setup-node
+          # exports NODE_AUTH_TOKEN to every later step as soon as registry-url is set,
+          # and writes an _authToken line into its userconfig. Two failure modes:
+          #   - a real token present -> npm uses it and never reaches for OIDC; a
+          #     deleted token then surfaces as a cryptic 404 on the PUT
+          #   - the key deleted but the line left behind -> a present-but-empty
+          #     _authToken still reads as "auth is configured", so npm answers
+          #     ENEEDAUTH without ever trying OIDC
+          # Deleting a config key is not a reliable way out, so hand npm a config that
+          # contains nothing but the registry URL.
+          unset NODE_AUTH_TOKEN
+          CLEAN_NPMRC=$(mktemp)
+          printf 'registry=https://registry.npmjs.org/\n' > "$CLEAN_NPMRC"
+          export NPM_CONFIG_USERCONFIG="$CLEAN_NPMRC"
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::no OIDC request URL/token in the environment - this job needs 'permissions: id-token: write'"
+            exit 1
           fi
+          echo "npm $(npm --version) on node $(node --version); clean userconfig, no token, OIDC URL + token present"
 
           # Skip rather than fail: npm returns 403 for a republished version and
           # would otherwise leave a half-finished run unrecoverable.
