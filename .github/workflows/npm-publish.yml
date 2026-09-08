@@ -80,7 +80,7 @@ on:
         type: boolean
         default: false
       npm_tag:
-        description: dist-tag to publish under (leave empty for latest)
+        description: dist-tag for this version (latest / next / beta). NOT a version number - leave empty for latest
         type: string
         default: ''
       auth:
@@ -218,6 +218,16 @@ jobs:
           set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
+
+          # A dist-tag that parses as a version (0.1.0, v1.0.0) makes
+          # `npm install <pkg>@0.1.0` ambiguous between a version and a tag, so npm
+          # refuses it. Catch it here naming the right input - npm's own message
+          # ("Tag name must not be a valid SemVer range") points at the tag without
+          # saying which field to fix.
+          if [ -n "$NPM_TAG" ] && node -e 'process.exit(/^v?\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$/.test(process.argv[1]) ? 0 : 1)' "$NPM_TAG"; then
+            echo "::error::npm_tag is a dist-tag (latest/next/beta), not a version - \"$NPM_TAG\" looks like a version, so npm will refuse it. Leave npm_tag empty to publish as latest."
+            exit 1
+          fi
 
           # Two auth lanes, chosen once here and reused by the publish call below.
           if [ "$AUTH_MODE" = token ]; then
